@@ -1,0 +1,21 @@
+# ローカル運用データ（実運用のスプレッドシート等。個人データを含むため非公開）
+data/
+
+# Excel lock files
+~$*.xlsx
+
+# OS
+Thumbs.db
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Environment / secrets
+.env
+.env.*
+*.local.*
+
+# Logs
+*.log
