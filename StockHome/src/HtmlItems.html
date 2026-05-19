@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<base href="<?= webAppUrl ?>" target="_top">
+<title>消耗品一覧 - StockHome</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  font-size:15px;color:#333;background:#f5f5f5;padding-bottom:70px}
+.container{max-width:480px;margin:0 auto;padding:12px}
+h1{font-size:18px;padding:14px 12px;background:#4a86c8;color:#fff;text-align:center}
+h2{font-size:16px;margin:16px 0 8px;color:#4a86c8}
+.card{background:#fff;border-radius:8px;padding:12px;margin-bottom:10px;
+  box-shadow:0 1px 3px rgba(0,0,0,.1)}
+.item-name{font-weight:bold;font-size:15px}
+.item-meta{font-size:13px;color:#666;margin-top:4px}
+.item-actions{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px;color:#fff}
+.badge-ok{background:#27ae60}.badge-off{background:#aaa}.badge-cat{background:#8e44ad}
+.badge-unknown{background:#9b59b6}
+.alt-list{margin-top:6px;padding-top:6px;border-top:1px dashed #e0e0e0;font-size:12px;color:#666}
+.alt-list .alt-lbl{font-weight:bold;color:#555;margin-right:4px}
+.alt-list .alt-item{display:inline-block;margin-right:8px}
+.alt-list .alt-item a{color:#4a86c8;text-decoration:none}
+.alt-list .alt-item a:hover{text-decoration:underline}
+.memo-box{margin-top:6px;padding:8px 10px;background:#fffceb;border-left:3px solid #f1c40f;
+  border-radius:4px;font-size:12px;color:#555;white-space:pre-wrap;word-break:break-word}
+.memo-box .memo-lbl{font-weight:bold;color:#b8860b;margin-right:4px}
+.btn{display:inline-block;padding:8px 14px;border:none;border-radius:6px;
+  font-size:13px;font-weight:bold;cursor:pointer;text-decoration:none;color:#fff}
+.btn-primary{background:#4a86c8}.btn-danger{background:#e74c3c}
+.btn-outline{background:#fff;color:#4a86c8;border:2px solid #4a86c8}
+.btn-sm{padding:6px 10px;font-size:12px}
+.msg{padding:10px;border-radius:6px;margin-bottom:10px;font-size:14px}
+.msg-success{background:#d4edda;color:#155724}
+.msg-error{background:#f8d7da;color:#721c24}
+.loading{text-align:center;padding:20px;color:#888}
+.toggle-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+.nav{position:fixed;bottom:0;left:0;right:0;background:#fff;
+  border-top:1px solid #ddd;display:flex;z-index:100}
+.nav a{flex:1;text-align:center;padding:8px 2px 6px;font-size:11px;
+  color:#888;text-decoration:none;line-height:1.2}
+.nav a.active{color:#4a86c8;font-weight:bold}
+.nav a span{display:block;font-size:18px;margin-bottom:2px}
+</style>
+</head>
+<body>
+
+<h1>消耗品一覧</h1>
+<div class="container">
+  <div class="toggle-row">
+    <label><input type="checkbox" id="showInactive" onchange="load()"> 無効品目も表示</label>
+    <a href="?page=itemForm" class="btn btn-primary btn-sm">+ 追加</a>
+  </div>
+  <div id="list"><div class="loading">読み込み中...</div></div>
+</div>
+
+<nav class="nav">
+  <a href="?page=home"><span>🏠</span>ホーム</a>
+  <a href="?page=items" class="active"><span>📦</span>消耗品</a>
+  <a href="?page=stocks"><span>📊</span>在庫</a>
+  <a href="?page=purchaseForm"><span>🛒</span>購入登録</a>
+  <a href="?page=notifications"><span>🔔</span>通知</a>
+</nav>
+
+<script>
+function load() {
+  var incl = document.getElementById('showInactive').checked;
+  document.getElementById('list').innerHTML = '<div class="loading">読み込み中...</div>';
+  google.script.run
+    .withSuccessHandler(function(res) {
+      if (!res.success) { showMsg('list', res.message, true); return; }
+      render(res.data);
+    })
+    .withFailureHandler(function(e) { showMsg('list', e.message, true); })
+    .getItemList(incl);
+}
+
+function render(items) {
+  if (items.length === 0) {
+    document.getElementById('list').innerHTML = '<div class="card"><p>消耗品がありません。</p></div>';
+    return;
+  }
+  var html = '';
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i];
+    var active = it.is_active === true || it.is_active === 'true' || it.is_active === 'TRUE';
+    var notifOn = it.notification_enabled === true || it.notification_enabled === 'true' || it.notification_enabled === 'TRUE';
+    html += '<div class="card' + (active ? '' : '" style="opacity:.5') + '">';
+    html += '<div class="item-name">' + esc(it.item_name);
+    if (it.category) html += ' <span class="badge badge-cat">' + esc(it.category) + '</span>';
+    if (it.is_inventory_unknown === true || it.is_inventory_unknown === 'true' || it.is_inventory_unknown === 'TRUE') {
+      html += ' <span class="badge badge-unknown">在庫不明</span>';
+    }
+    html += '</div>';
+    html += '<div class="item-meta">';
+    html += '単位: ' + esc(it.unit || '-') + ' / 標準購入数: ' + esc(it.default_purchase_qty);
+    html += ' / 消費: ' + esc(it.days_per_unit) + '日/個';
+    html += '</div>';
+    html += '<div class="item-meta">';
+    html += '通知: ' + (notifOn ? '<span class="badge badge-ok">ON</span>' : '<span class="badge badge-off">OFF</span>');
+    if (it.purchase_url) {
+      html += ' <a href="' + esc(it.purchase_url) + '" target="_blank" style="font-size:13px">購入先</a>';
+    }
+    html += '</div>';
+    html += renderAlts(it.alternatives);
+    html += renderMemo(it.item_memo);
+    html += '<div class="item-actions">';
+    html += '<a href="?page=itemForm&itemId=' + esc(it.item_id) + '" class="btn btn-outline btn-sm">編集</a>';
+    html += '<a href="?page=purchaseHistory&itemId=' + esc(it.item_id) + '" class="btn btn-outline btn-sm">履歴</a>';
+    if (active) {
+      html += '<button class="btn btn-danger btn-sm" onclick="del(\'' + esc(it.item_id) + '\',\'' + esc(it.item_name) + '\')">削除</button>';
+    }
+    html += '</div></div>';
+  }
+  document.getElementById('list').innerHTML = html;
+}
+
+function renderMemo(memo) {
+  if (!memo) return '';
+  return '<div class="memo-box"><span class="memo-lbl">📝 メモ:</span>' + esc(memo) + '</div>';
+}
+
+function renderAlts(alts) {
+  if (!alts || !alts.length) return '';
+  var html = '<div class="alt-list"><span class="alt-lbl">代替:</span>';
+  for (var i = 0; i < alts.length; i++) {
+    var a = alts[i] || {};
+    var name = a.name || '';
+    if (!name) continue;
+    var label = esc(name);
+    if (a.note) label += '（' + esc(a.note) + '）';
+    if (a.url) {
+      label = '<a href="' + esc(a.url) + '" target="_blank">' + label + '</a>';
+    }
+    html += '<span class="alt-item">' + label + '</span>';
+  }
+  html += '</div>';
+  return html;
+}
+
+function del(id, name) {
+  if (!confirm(name + ' を削除しますか？')) return;
+  google.script.run
+    .withSuccessHandler(function(res) {
+      if (res.success) { load(); } else { alert(res.message); }
+    })
+    .withFailureHandler(function(e) { alert(e.message); })
+    .deleteItem(id);
+}
+
+function showMsg(elId, msg, isErr) {
+  document.getElementById(elId).innerHTML =
+    '<div class="msg ' + (isErr ? 'msg-error' : 'msg-success') + '">' + esc(msg) + '</div>';
+}
+function esc(s) {
+  if (!s && s !== 0) return '';
+  var d = document.createElement('div');
+  d.appendChild(document.createTextNode(String(s)));
+  return d.innerHTML;
+}
+load();
+</script>
+</body>
+</html>

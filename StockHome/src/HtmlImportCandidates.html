@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<base href="<?= webAppUrl ?>" target="_top">
+<title>取込候補 - StockHome</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  font-size:15px;color:#333;background:#f5f5f5;padding-bottom:70px}
+.container{max-width:480px;margin:0 auto;padding:12px}
+h1{font-size:18px;padding:14px 12px;background:#8e44ad;color:#fff;text-align:center}
+.card{background:#fff;border-radius:8px;padding:12px;margin-bottom:10px;
+  box-shadow:0 1px 3px rgba(0,0,0,.1)}
+.cand-vendor{font-size:12px;font-weight:bold;text-transform:uppercase;color:#8e44ad}
+.cand-name{font-weight:bold;margin:4px 0}
+.cand-meta{font-size:13px;color:#666}
+.cand-subject{font-size:12px;color:#999;margin-top:4px;word-break:break-all}
+.cand-note{font-size:12px;color:#e67e22;margin-top:4px}
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;color:#fff}
+.badge-ordered{background:#3498db}.badge-shipped{background:#f39c12}
+.badge-detected{background:#95a5a6}.badge-auto{background:#27ae60}
+.badge-pending{background:#e67e22}.badge-reflected{background:#27ae60}
+.badge-deleted{background:#c0392b}
+.reflect-row{margin-top:6px;font-size:12px}
+.reflect-row .badge{margin-right:4px}
+.actions{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+select.match-sel{padding:6px;border:1px solid #ccc;border-radius:4px;font-size:13px;flex:1}
+.btn-sm{padding:6px 10px;border:none;border-radius:4px;font-size:12px;
+  cursor:pointer;color:#fff}
+.bg-green{background:#27ae60}.bg-gray{background:#95a5a6}.bg-blue{background:#3498db}
+.loading{text-align:center;padding:20px;color:#888}
+.msg{padding:10px;border-radius:6px;margin-bottom:10px;font-size:14px}
+.msg-success{background:#d4edda;color:#155724}
+.msg-error{background:#f8d7da;color:#721c24}
+.section-title{font-size:15px;font-weight:bold;color:#555;margin:16px 0 8px;
+  padding-bottom:4px;border-bottom:2px solid #ddd}
+.auto-card{background:#f0fff0;border-left:3px solid #27ae60}
+.nav{position:fixed;bottom:0;left:0;right:0;background:#fff;
+  border-top:1px solid #ddd;display:flex;z-index:100}
+.nav a{flex:1;text-align:center;padding:8px 2px 6px;font-size:11px;
+  color:#888;text-decoration:none;line-height:1.2}
+.nav a span{display:block;font-size:18px;margin-bottom:2px}
+</style>
+</head>
+<body>
+
+<h1>Gmail 取込候補</h1>
+<div class="container">
+  <div id="msg"></div>
+  <div id="list"><div class="loading">読み込み中...</div></div>
+  <div id="autoSection"></div>
+</div>
+
+<nav class="nav">
+  <a href="?page=home"><span>🏠</span>ホーム</a>
+  <a href="?page=items"><span>📦</span>消耗品</a>
+  <a href="?page=stocks"><span>📊</span>在庫</a>
+  <a href="?page=purchaseForm"><span>🛒</span>購入登録</a>
+  <a href="?page=notifications"><span>🔔</span>通知</a>
+</nav>
+
+<script>
+var ITEMS = [];
+
+function load() {
+  document.getElementById('list').innerHTML = '<div class="loading">読み込み中...</div>';
+  google.script.run
+    .withSuccessHandler(function(res) {
+      if (!res.success) { showMsg(res.message, true); return; }
+      ITEMS = res.data.items || [];
+      render(res.data.candidates || []);
+    })
+    .withFailureHandler(function(e) { showMsg(e.message, true); })
+    .getImportCandidatesForView();
+
+  google.script.run
+    .withSuccessHandler(function(res) {
+      if (res.success) renderAutoConfirmed(res.data || []);
+    })
+    .getAutoConfirmedCandidates();
+}
+
+function render(candidates) {
+  if (candidates.length === 0) {
+    document.getElementById('list').innerHTML =
+      '<div class="card"><p>未確認の取込候補はありません。</p></div>';
+    return;
+  }
+
+  var itemOptions = '<option value="">品目を選択</option>';
+  for (var j = 0; j < ITEMS.length; j++) {
+    itemOptions += '<option value="' + esc(ITEMS[j].item_id) + '">' +
+      esc(ITEMS[j].item_name) + '</option>';
+  }
+
+  var html = '';
+  for (var i = 0; i < candidates.length; i++) {
+    var c = candidates[i];
+    var statusBadge = 'badge-detected';
+    if (c.candidate_status === 'ordered') statusBadge = 'badge-ordered';
+    if (c.candidate_status === 'shipped') statusBadge = 'badge-shipped';
+
+    html += '<div class="card" id="cand-' + esc(c.candidate_id) + '">';
+    html += '<div class="cand-vendor">' + esc(c.vendor) +
+      ' <span class="badge ' + statusBadge + '">' + esc(c.candidate_status) + '</span></div>';
+    html += '<div class="cand-name">' + esc(c.item_name_raw || '(商品名不明)') + '</div>';
+    html += '<div class="cand-meta">日付: ' + esc(c.mail_date) +
+      ' / 数量: ' + (c.detected_qty || '?') + '</div>';
+    if (c.order_id) {
+      html += '<div class="cand-meta">注文番号: ' + esc(c.order_id) + '</div>';
+    }
+    html += '<div class="cand-subject">件名: ' + esc(c.raw_subject) + '</div>';
+
+    if (c.parse_result && c.parse_result.indexOf('複数一致') !== -1) {
+      html += '<div class="cand-note">' + esc(c.parse_result) + '</div>';
+    }
+
+    html += '<div class="actions">';
+    html += '<select class="match-sel" id="match-' + esc(c.candidate_id) + '">' +
+      itemOptions + '</select>';
+    html += '<button class="btn-sm bg-green" onclick="confirm_(\'' + esc(c.candidate_id) + '\')">確定</button>';
+    html += '<button class="btn-sm bg-gray" onclick="ignore_(\'' + esc(c.candidate_id) + '\')">無視</button>';
+    html += '</div>';
+    html += '<div style="margin-top:6px">';
+    html += '<a href="?page=itemForm&prefillName=' + encodeURIComponent(c.item_name_raw || '') +
+      '" class="btn-sm bg-blue" style="text-decoration:none;display:inline-block">新規品目として登録</a>';
+    html += '</div>';
+    html += '</div>';
+  }
+  document.getElementById('list').innerHTML = html;
+}
+
+function renderAutoConfirmed(list) {
+  if (list.length === 0) {
+    document.getElementById('autoSection').innerHTML = '';
+    return;
+  }
+  var html = '<div class="section-title">自動確定済み（直近）</div>';
+  for (var i = 0; i < list.length; i++) {
+    var c = list[i];
+    html += '<div class="card auto-card">';
+    html += '<div class="cand-vendor">' + esc(c.vendor) +
+      ' <span class="badge badge-auto">自動確定</span></div>';
+    html += '<div class="cand-name">' + esc(c.item_name_raw || '') + '</div>';
+    var linkedLabel = c.matched_item_name || c.matched_item_id;
+    var deletedBadge = (c.matched_item_deleted === true || c.matched_item_deleted === 'true')
+      ? ' <span class="badge badge-deleted">削除済</span>' : '';
+    html += '<div class="cand-meta">日付: ' + esc(c.mail_date) +
+      ' / 紐付先: ' + esc(linkedLabel) + deletedBadge + '</div>';
+    var pq = Number(c.purchase_qty || 0);
+    if (pq > 0) {
+      html += '<div class="cand-meta">登録数量: ' + pq + '個</div>';
+    }
+    html += '<div class="cand-meta">確定日時: ' + esc(c.updated_at) + '</div>';
+    html += renderReflectStatus(c);
+    html += '</div>';
+  }
+  document.getElementById('autoSection').innerHTML = html;
+}
+
+function renderReflectStatus(c) {
+  if (!c.inventory_effective_at) return '';
+  var counted = (c.counted_in_inventory === true || c.counted_in_inventory === 'true');
+  if (counted) {
+    return '<div class="reflect-row"><span class="badge badge-reflected">反映済</span>' +
+      '在庫反映日: ' + esc(c.inventory_effective_at) + '</div>';
+  }
+  var days = daysUntil(c.inventory_effective_at);
+  var suffix = '';
+  if (days !== null) {
+    if (days <= 0) suffix = '（次の日次バッチで反映）';
+    else if (days === 1) suffix = '（明日反映予定）';
+    else suffix = '（あと' + days + '日）';
+  }
+  return '<div class="reflect-row"><span class="badge badge-pending">反映待ち</span>' +
+    esc(c.inventory_effective_at) + ' 反映予定' + suffix + '</div>';
+}
+
+function daysUntil(dateStr) {
+  if (!dateStr) return null;
+  var parts = String(dateStr).split(/[\/\-]/);
+  if (parts.length < 3) return null;
+  var target = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+  var today = new Date();
+  today.setHours(0, 0, 0, 0);
+  target.setHours(0, 0, 0, 0);
+  if (isNaN(target.getTime())) return null;
+  return Math.round((target.getTime() - today.getTime()) / 86400000);
+}
+
+function setCardProcessing(candId, processing) {
+  var card = document.getElementById('cand-' + candId);
+  if (!card) return;
+  var btns = card.querySelectorAll('button, select, a');
+  for (var i = 0; i < btns.length; i++) {
+    btns[i].disabled = processing;
+    if (btns[i].tagName === 'A') {
+      btns[i].style.pointerEvents = processing ? 'none' : '';
+      btns[i].style.opacity = processing ? '0.5' : '';
+    }
+  }
+  card.style.opacity = processing ? '0.6' : '';
+  var existing = card.querySelector('.processing-indicator');
+  if (processing && !existing) {
+    var p = document.createElement('div');
+    p.className = 'processing-indicator';
+    p.style.cssText = 'margin-top:8px;color:#3498db;font-size:13px;font-weight:bold';
+    p.textContent = '処理中...';
+    card.appendChild(p);
+  } else if (!processing && existing) {
+    existing.remove();
+  }
+}
+
+function confirm_(candId) {
+  var sel = document.getElementById('match-' + candId);
+  var itemId = sel ? sel.value : '';
+  if (!itemId) { alert('品目を選択してください。'); return; }
+
+  setCardProcessing(candId, true);
+  google.script.run
+    .withSuccessHandler(function(res) {
+      setCardProcessing(candId, false);
+      showMsg(res.message, !res.success);
+      window.scrollTo(0, 0);
+      if (res.success) {
+        var el = document.getElementById('cand-' + candId);
+        if (el) el.style.display = 'none';
+        load();
+      }
+    })
+    .withFailureHandler(function(e) {
+      setCardProcessing(candId, false);
+      showMsg(e.message, true);
+      window.scrollTo(0, 0);
+    })
+    .confirmCandidate(candId, itemId);
+}
+
+function ignore_(candId) {
+  if (!window.confirm('この候補を無視しますか？')) return;
+  setCardProcessing(candId, true);
+  google.script.run
+    .withSuccessHandler(function(res) {
+      setCardProcessing(candId, false);
+      showMsg(res.message, !res.success);
+      window.scrollTo(0, 0);
+      if (res.success) {
+        var el = document.getElementById('cand-' + candId);
+        if (el) el.style.display = 'none';
+      }
+    })
+    .withFailureHandler(function(e) {
+      setCardProcessing(candId, false);
+      showMsg(e.message, true);
+      window.scrollTo(0, 0);
+    })
+    .ignoreCandidate(candId);
+}
+
+function showMsg(msg, isErr) {
+  document.getElementById('msg').innerHTML =
+    '<div class="msg ' + (isErr ? 'msg-error' : 'msg-success') + '">' + esc(msg) + '</div>';
+}
+function esc(s) {
+  if (!s && s !== 0) return '';
+  var d = document.createElement('div');
+  d.appendChild(document.createTextNode(String(s)));
+  return d.innerHTML;
+}
+load();
+</script>
+</body>
+</html>

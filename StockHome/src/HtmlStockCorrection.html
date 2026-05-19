@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<base href="<?= webAppUrl ?>" target="_top">
+<title>在庫補正 - StockHome</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  font-size:15px;color:#333;background:#f5f5f5;padding-bottom:70px}
+.container{max-width:480px;margin:0 auto;padding:12px}
+h1{font-size:18px;padding:14px 12px;background:#e74c3c;color:#fff;text-align:center}
+.card{background:#fff;border-radius:8px;padding:14px;margin-bottom:12px;
+  box-shadow:0 1px 3px rgba(0,0,0,.1)}
+label{display:block;font-size:14px;font-weight:bold;margin:10px 0 4px;color:#555}
+input[type=number],select,textarea{width:100%;padding:10px;border:1px solid #ccc;
+  border-radius:6px;font-size:15px}
+textarea{height:60px;resize:vertical}
+.current-stock{font-size:18px;font-weight:bold;color:#e74c3c;
+  text-align:center;padding:12px;background:#fff5f5;border-radius:6px;margin:8px 0}
+.btn{display:inline-block;padding:14px 20px;border:none;border-radius:6px;
+  font-size:15px;font-weight:bold;cursor:pointer;width:100%;color:#fff;margin-top:12px}
+.btn-danger{background:#e74c3c}
+.btn-outline{background:#fff;color:#4a86c8;border:2px solid #4a86c8}
+.btn:disabled{opacity:.5}
+.msg{padding:10px;border-radius:6px;margin-bottom:10px;font-size:14px}
+.msg-success{background:#d4edda;color:#155724}
+.msg-error{background:#f8d7da;color:#721c24}
+.loading{text-align:center;padding:20px;color:#888}
+.hint{font-size:12px;color:#888;margin-top:2px}
+.nav{position:fixed;bottom:0;left:0;right:0;background:#fff;
+  border-top:1px solid #ddd;display:flex;z-index:100}
+.nav a{flex:1;text-align:center;padding:8px 2px 6px;font-size:11px;
+  color:#888;text-decoration:none;line-height:1.2}
+.nav a span{display:block;font-size:18px;margin-bottom:2px}
+</style>
+</head>
+<body>
+
+<h1>在庫補正</h1>
+<div class="container">
+  <div id="msg"></div>
+  <div class="card">
+    <form id="correctionForm" onsubmit="save(event)">
+      <label for="item_id">品目 *</label>
+      <select id="item_id" required onchange="onItemChange()">
+        <option value="">選択してください</option>
+      </select>
+
+      <div id="stockInfo" style="display:none">
+        <div class="current-stock" id="currentQty">-</div>
+        <div class="hint" style="text-align:center">現在の推定残数</div>
+      </div>
+
+      <label for="corrected_qty">実際の残数 *</label>
+      <input type="number" id="corrected_qty" min="0" step="0.1" required placeholder="実際に数えた数">
+
+      <label for="correction_reason">補正理由 *</label>
+      <select id="correction_reason" required>
+        <option value="">選択してください</option>
+        <option value="counted_actual_stock">実数を数えた</option>
+        <option value="still_have_more">まだ在庫がある</option>
+        <option value="wrong_import">取り込みミスの修正</option>
+        <option value="manual_adjustment">その他手動調整</option>
+      </select>
+
+      <label for="note">メモ</label>
+      <textarea id="note" placeholder="補正の詳細（任意）"></textarea>
+
+      <button type="submit" class="btn btn-danger" id="submitBtn">在庫を補正する</button>
+      <a href="?page=stocks" class="btn btn-outline" style="display:block;text-align:center;margin-top:8px">戻る</a>
+    </form>
+  </div>
+</div>
+
+<nav class="nav">
+  <a href="?page=home"><span>🏠</span>ホーム</a>
+  <a href="?page=items"><span>📦</span>消耗品</a>
+  <a href="?page=stocks"><span>📊</span>在庫</a>
+  <a href="?page=purchaseForm"><span>🛒</span>購入登録</a>
+  <a href="?page=notifications"><span>🔔</span>通知</a>
+</nav>
+
+<script>
+var PRE_ITEM_ID = '<?= itemId ?>';
+
+function init() {
+  // 品目一覧を取得
+  google.script.run.withSuccessHandler(function(res) {
+    if (!res.success) return;
+    var sel = document.getElementById('item_id');
+    res.data.forEach(function(it) {
+      var opt = document.createElement('option');
+      opt.value = it.item_id;
+      opt.text = it.item_name + (it.unit ? ' (' + it.unit + ')' : '');
+      sel.appendChild(opt);
+    });
+    // URL パラメータで品目が指定されていたら選択
+    if (PRE_ITEM_ID) {
+      sel.value = PRE_ITEM_ID;
+      onItemChange();
+    }
+  }).getItemList(false);
+}
+
+function onItemChange() {
+  var itemId = document.getElementById('item_id').value;
+  if (!itemId) {
+    document.getElementById('stockInfo').style.display = 'none';
+    return;
+  }
+  document.getElementById('currentQty').textContent = '計算中...';
+  document.getElementById('stockInfo').style.display = 'block';
+
+  google.script.run.withSuccessHandler(function(res) {
+    if (!res.success) {
+      document.getElementById('currentQty').textContent = '取得失敗';
+      return;
+    }
+    var qty = res.data.estimated_remaining_qty;
+    var unit = res.data.unit || '';
+    if (qty !== '' && qty !== null && qty !== undefined) {
+      document.getElementById('currentQty').textContent =
+        (Math.round(Number(qty) * 10) / 10) + ' ' + unit;
+    } else {
+      document.getElementById('currentQty').textContent = '購入履歴なし';
+    }
+  }).getStockForCorrection(itemId);
+}
+
+function save(e) {
+  e.preventDefault();
+  var btn = document.getElementById('submitBtn');
+  btn.disabled = true; btn.textContent = '補正中...';
+
+  var data = {
+    item_id: document.getElementById('item_id').value,
+    corrected_qty: document.getElementById('corrected_qty').value,
+    correction_reason: document.getElementById('correction_reason').value,
+    note: document.getElementById('note').value
+  };
+
+  google.script.run
+    .withSuccessHandler(function(res) {
+      btn.disabled = false; btn.textContent = '在庫を補正する';
+      if (res.success) {
+        showMsg(res.message, false);
+        onItemChange(); // 補正後の値を再表示
+      } else {
+        showMsg(res.message, true);
+      }
+    })
+    .withFailureHandler(function(e) {
+      btn.disabled = false; btn.textContent = '在庫を補正する';
+      showMsg(e.message, true);
+    })
+    .saveStockCorrection(data);
+}
+
+function showMsg(msg, isErr) {
+  document.getElementById('msg').innerHTML =
+    '<div class="msg ' + (isErr ? 'msg-error' : 'msg-success') + '">' + esc(msg) + '</div>';
+  window.scrollTo(0, 0);
+}
+function esc(s) {
+  if (!s && s !== 0) return '';
+  var d = document.createElement('div');
+  d.appendChild(document.createTextNode(String(s)));
+  return d.innerHTML;
+}
+init();
+</script>
+</body>
+</html>

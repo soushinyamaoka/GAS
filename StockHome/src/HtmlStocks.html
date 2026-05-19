@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<base href="<?= webAppUrl ?>" target="_top">
+<title>在庫予測 - StockHome</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  font-size:15px;color:#333;background:#f5f5f5;padding-bottom:70px}
+.container{max-width:480px;margin:0 auto;padding:12px}
+h1{font-size:18px;padding:14px 12px;background:#4a86c8;color:#fff;text-align:center}
+.card{background:#fff;border-radius:8px;padding:12px;margin-bottom:10px;
+  box-shadow:0 1px 3px rgba(0,0,0,.1)}
+.stock-name{font-weight:bold;font-size:15px;margin-bottom:4px}
+.stock-row{display:flex;justify-content:space-between;font-size:13px;padding:2px 0}
+.stock-row .lbl{color:#888}
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px;color:#fff}
+.badge-danger{background:#e74c3c}.badge-warn{background:#f39c12}.badge-ok{background:#27ae60}
+.badge-info{background:#3498db}.badge-off{background:#aaa}.badge-unknown{background:#9b59b6}
+.actions{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
+.btn-sm{display:inline-block;padding:6px 10px;border:none;border-radius:4px;
+  font-size:12px;cursor:pointer;text-decoration:none;color:#fff}
+.bg-blue{background:#3498db}.bg-orange{background:#f39c12}
+.bg-green{background:#27ae60}.bg-gray{background:#95a5a6}
+.bg-outline{background:#fff;color:#4a86c8;border:1px solid #4a86c8}
+.snooze-info{font-size:12px;color:#f39c12;margin-top:4px}
+.alt-list{margin-top:6px;padding-top:6px;border-top:1px dashed #e0e0e0;font-size:12px;color:#666}
+.alt-list .alt-lbl{font-weight:bold;color:#555;margin-right:4px}
+.alt-list .alt-item{display:inline-block;margin-right:8px}
+.alt-list .alt-item a{color:#4a86c8;text-decoration:none}
+.alt-list .alt-item a:hover{text-decoration:underline}
+@keyframes flashCard{0%{background:#fff7c2}100%{background:#fff}}
+.card.flash{animation:flashCard 2s ease-out}
+.loading{text-align:center;padding:20px;color:#888}
+.msg{padding:10px;border-radius:6px;margin-bottom:10px;font-size:14px}
+.msg-success{background:#d4edda;color:#155724}
+.msg-error{background:#f8d7da;color:#721c24}
+.nav{position:fixed;bottom:0;left:0;right:0;background:#fff;
+  border-top:1px solid #ddd;display:flex;z-index:100}
+.nav a{flex:1;text-align:center;padding:8px 2px 6px;font-size:11px;
+  color:#888;text-decoration:none;line-height:1.2}
+.nav a.active{color:#4a86c8;font-weight:bold}
+.nav a span{display:block;font-size:18px;margin-bottom:2px}
+</style>
+</head>
+<body>
+
+<h1>在庫予測一覧</h1>
+<div class="container">
+  <div id="msg"></div>
+  <div id="list"><div class="loading">読み込み中...</div></div>
+</div>
+
+<nav class="nav">
+  <a href="?page=home"><span>🏠</span>ホーム</a>
+  <a href="?page=items"><span>📦</span>消耗品</a>
+  <a href="?page=stocks" class="active"><span>📊</span>在庫</a>
+  <a href="?page=purchaseForm"><span>🛒</span>購入登録</a>
+  <a href="?page=notifications"><span>🔔</span>通知</a>
+</nav>
+
+<script>
+var TARGET_ITEM_ID = '<?= itemId ?>';
+
+function load() {
+  document.getElementById('list').innerHTML = '<div class="loading">計算中...</div>';
+  google.script.run
+    .withSuccessHandler(function(res) {
+      // 何らかの理由でレスポンスが null/undefined のときも UX を壊さない
+      if (!res) {
+        showMsg('読み込みに失敗しました（レスポンスが空）。', true);
+        document.getElementById('list').innerHTML =
+          '<div class="card"><p>読み込みに失敗しました。再度開き直してください。</p></div>';
+        return;
+      }
+      if (!res.success) {
+        showMsg(res.message, true);
+        document.getElementById('list').innerHTML =
+          '<div class="card"><p>読み込みに失敗しました。</p></div>';
+        return;
+      }
+      render(res.data);
+    })
+    .withFailureHandler(function(e) {
+      showMsg(e.message, true);
+      document.getElementById('list').innerHTML =
+        '<div class="card"><p>読み込みに失敗しました。</p></div>';
+    })
+    .getStockList();
+}
+
+function render(stocks) {
+  if (stocks.length === 0) {
+    document.getElementById('list').innerHTML = '<div class="card"><p>消耗品を登録して購入履歴を追加すると、ここに在庫予測が表示されます。</p></div>';
+    return;
+  }
+  var html = '';
+  for (var i = 0; i < stocks.length; i++) {
+    var s = stocks[i];
+    var hasData = s.has_purchase_history;
+    var days = hasData ? Math.round(Number(s.estimated_days_left)) : null;
+    var remain = hasData ? (Math.round(Number(s.estimated_remaining_qty) * 10) / 10) : null;
+
+    // バッジ色
+    var daysBadge = 'badge-ok';
+    if (days !== null) {
+      if (days <= 3) daysBadge = 'badge-danger';
+      else if (days <= 7) daysBadge = 'badge-warn';
+    }
+    var alertBadge = s.alert_needed ? 'badge-danger' : 'badge-ok';
+
+    html += '<div class="card" id="stock-' + esc(s.item_id) + '">';
+    html += '<div class="stock-name">' + esc(s.item_name);
+    if (s.is_inventory_unknown === true || s.is_inventory_unknown === 'true' || s.is_inventory_unknown === 'TRUE') {
+      html += ' <span class="badge badge-unknown">在庫不明</span>';
+    } else if (s.alert_needed) {
+      html += ' <span class="badge badge-danger">要注意</span>';
+    }
+    html += '</div>';
+
+    if (hasData) {
+      html += '<div class="stock-row"><span class="lbl">推定残数</span><span>' +
+        (remain !== null ? remain + ' ' + esc(s.unit) : '-') + '</span></div>';
+      html += '<div class="stock-row"><span class="lbl">推定残日数</span><span>' +
+        '<span class="badge ' + daysBadge + '">' + (days !== null ? days + '日' : '-') + '</span></span></div>';
+      html += '<div class="stock-row"><span class="lbl">在庫切れ予測日</span><span>' +
+        esc(s.predicted_out_of_stock_date) + '</span></div>';
+      if (s.low_stock_threshold_qty !== '' && s.low_stock_threshold_qty !== null) {
+        html += '<div class="stock-row"><span class="lbl">数量しきい値</span><span>' +
+          s.low_stock_threshold_qty + '</span></div>';
+      }
+      html += '<div class="stock-row"><span class="lbl">最新購入</span><span>' +
+        esc(s.latest_purchase_date) + ' (' + s.latest_purchase_qty + ')' + '</span></div>';
+    } else {
+      html += '<div class="stock-row"><span class="lbl">状態</span><span>購入履歴なし</span></div>';
+    }
+
+    // スヌーズ情報
+    if (s.snooze_until) {
+      html += '<div class="snooze-info">スヌーズ中: ' + esc(s.snooze_until) + ' まで</div>';
+    }
+
+    // 代替購入候補
+    html += renderAlts(s.alternatives);
+
+    // アクション
+    html += '<div class="actions">';
+    if (s.purchase_url) {
+      html += '<a href="' + esc(s.purchase_url) + '" target="_blank" class="btn-sm bg-green">購入</a>';
+    }
+    html += '<a href="?page=stockCorrection&itemId=' + esc(s.item_id) + '" class="btn-sm bg-blue">補正</a>';
+    if (!s.snooze_until) {
+      html += '<button class="btn-sm bg-orange" onclick="snooze(\'' + esc(s.item_id) + '\',\'3days\')">3日スヌーズ</button>';
+      html += '<button class="btn-sm bg-gray" onclick="snooze(\'' + esc(s.item_id) + '\',\'ignore\')">無視</button>';
+    } else {
+      html += '<button class="btn-sm bg-outline" onclick="clearSn(\'' + esc(s.item_id) + '\')">スヌーズ解除</button>';
+    }
+    html += '</div></div>';
+  }
+  document.getElementById('list').innerHTML = html;
+  scrollToTarget();
+}
+
+function scrollToTarget() {
+  if (!TARGET_ITEM_ID) return;
+  var el = document.getElementById('stock-' + TARGET_ITEM_ID);
+  if (!el) return;
+  // ナビ高さを考慮して少し上にオフセットしたい場合は scrollIntoView の後に微調整
+  el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  el.classList.add('flash');
+  // 二度目以降のクリックでも再度ハイライトできるように、アニメ完了後にクラス除去
+  setTimeout(function() { el.classList.remove('flash'); }, 2100);
+}
+
+function renderAlts(alts) {
+  if (!alts || !alts.length) return '';
+  var html = '<div class="alt-list"><span class="alt-lbl">代替:</span>';
+  for (var i = 0; i < alts.length; i++) {
+    var a = alts[i] || {};
+    var name = a.name || '';
+    if (!name) continue;
+    var label = esc(name);
+    if (a.note) label += '（' + esc(a.note) + '）';
+    if (a.url) {
+      label = '<a href="' + esc(a.url) + '" target="_blank">' + label + '</a>';
+    }
+    html += '<span class="alt-item">' + label + '</span>';
+  }
+  html += '</div>';
+  return html;
+}
+
+function snooze(itemId, action) {
+  google.script.run
+    .withSuccessHandler(function(res) {
+      showMsg(res.message, !res.success);
+      if (res.success) load();
+    })
+    .withFailureHandler(function(e) { showMsg(e.message, true); })
+    .snoozeNotification({ item_id: itemId, action: action });
+}
+
+function clearSn(itemId) {
+  google.script.run
+    .withSuccessHandler(function(res) {
+      showMsg(res.message, !res.success);
+      if (res.success) load();
+    })
+    .withFailureHandler(function(e) { showMsg(e.message, true); })
+    .clearNotificationSnooze(itemId);
+}
+
+function showMsg(msg, isErr) {
+  document.getElementById('msg').innerHTML =
+    '<div class="msg ' + (isErr ? 'msg-error' : 'msg-success') + '">' + esc(msg) + '</div>';
+}
+function esc(s) {
+  if (!s && s !== 0) return '';
+  var d = document.createElement('div');
+  d.appendChild(document.createTextNode(String(s)));
+  return d.innerHTML;
+}
+load();
+</script>
+</body>
+</html>

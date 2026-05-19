@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<base href="<?= webAppUrl ?>" target="_top">
+<title>購入登録 - StockHome</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  font-size:15px;color:#333;background:#f5f5f5;padding-bottom:70px}
+.container{max-width:480px;margin:0 auto;padding:12px}
+h1{font-size:18px;padding:14px 12px;background:#27ae60;color:#fff;text-align:center}
+.card{background:#fff;border-radius:8px;padding:14px;margin-bottom:12px;
+  box-shadow:0 1px 3px rgba(0,0,0,.1)}
+label{display:block;font-size:14px;font-weight:bold;margin:10px 0 4px;color:#555}
+input[type=text],input[type=number],input[type=date],select,textarea{
+  width:100%;padding:10px;border:1px solid #ccc;border-radius:6px;font-size:15px}
+textarea{height:60px;resize:vertical}
+.btn{display:inline-block;padding:14px 20px;border:none;border-radius:6px;
+  font-size:15px;font-weight:bold;cursor:pointer;width:100%;color:#fff;margin-top:12px}
+.btn-success{background:#27ae60}.btn-outline{background:#fff;color:#4a86c8;border:2px solid #4a86c8}
+.btn:disabled{opacity:.5}
+.msg{padding:10px;border-radius:6px;margin-bottom:10px;font-size:14px}
+.msg-success{background:#d4edda;color:#155724}
+.msg-error{background:#f8d7da;color:#721c24}
+.nav{position:fixed;bottom:0;left:0;right:0;background:#fff;
+  border-top:1px solid #ddd;display:flex;z-index:100}
+.nav a{flex:1;text-align:center;padding:8px 2px 6px;font-size:11px;
+  color:#888;text-decoration:none;line-height:1.2}
+.nav a.active{color:#4a86c8;font-weight:bold}
+.nav a span{display:block;font-size:18px;margin-bottom:2px}
+</style>
+</head>
+<body>
+
+<h1>購入を記録</h1>
+<div class="container">
+  <div id="msg"></div>
+  <div class="card">
+    <form id="purchaseForm" onsubmit="save(event)">
+      <label for="item_id">品目 *</label>
+      <select id="item_id" required>
+        <option value="">選択してください</option>
+      </select>
+
+      <label for="purchased_at">購入日 *</label>
+      <input type="date" id="purchased_at" required>
+
+      <label for="qty">購入数（個数）*</label>
+      <input type="number" id="qty" min="1" value="1" required>
+
+      <label for="price">1箱（1セット）の単価 [円]</label>
+      <input type="number" id="price" min="0" step="1" placeholder="空欄可">
+
+      <label for="source_label">購入元</label>
+      <input type="text" id="source_label" placeholder="例: Amazon, マツキヨ, 近所のスーパー">
+
+      <label for="note">備考</label>
+      <textarea id="note" placeholder="メモがあれば"></textarea>
+
+      <button type="submit" class="btn btn-success" id="submitBtn">登録</button>
+      <a href="?page=home" class="btn btn-outline" style="display:block;text-align:center;margin-top:8px">戻る</a>
+    </form>
+  </div>
+</div>
+
+<nav class="nav">
+  <a href="?page=home"><span>🏠</span>ホーム</a>
+  <a href="?page=items"><span>📦</span>消耗品</a>
+  <a href="?page=stocks"><span>📊</span>在庫</a>
+  <a href="?page=purchaseForm" class="active"><span>🛒</span>購入登録</a>
+  <a href="?page=notifications"><span>🔔</span>通知</a>
+</nav>
+
+<script>
+function init() {
+  // 今日の日付をセット
+  var today = new Date();
+  var yyyy = today.getFullYear();
+  var mm = ('0' + (today.getMonth() + 1)).slice(-2);
+  var dd = ('0' + today.getDate()).slice(-2);
+  document.getElementById('purchased_at').value = yyyy + '-' + mm + '-' + dd;
+
+  // 品目一覧を取得
+  google.script.run.withSuccessHandler(function(res) {
+    if (!res.success) return;
+    var sel = document.getElementById('item_id');
+    res.data.forEach(function(it) {
+      var opt = document.createElement('option');
+      opt.value = it.item_id;
+      opt.text = it.item_name + (it.category ? ' (' + it.category + ')' : '');
+      sel.appendChild(opt);
+    });
+  }).getItemList(false);
+}
+
+function save(e) {
+  e.preventDefault();
+  var btn = document.getElementById('submitBtn');
+  btn.disabled = true; btn.textContent = '登録中...';
+
+  var data = {
+    item_id: document.getElementById('item_id').value,
+    purchased_at: document.getElementById('purchased_at').value,
+    qty: document.getElementById('qty').value,
+    price: document.getElementById('price').value,
+    note: document.getElementById('note').value
+  };
+
+  google.script.run
+    .withSuccessHandler(function(res) {
+      btn.disabled = false; btn.textContent = '登録';
+      if (res.success) {
+        showMsg(res.message, false);
+        document.getElementById('purchaseForm').reset();
+        // 日付を再セット
+        var today = new Date();
+        document.getElementById('purchased_at').value =
+          today.getFullYear() + '-' + ('0'+(today.getMonth()+1)).slice(-2) + '-' + ('0'+today.getDate()).slice(-2);
+      } else {
+        showMsg(res.message, true);
+      }
+    })
+    .withFailureHandler(function(e) {
+      btn.disabled = false; btn.textContent = '登録';
+      showMsg(e.message, true);
+    })
+    .savePurchase(data);
+}
+
+function showMsg(msg, isErr) {
+  document.getElementById('msg').innerHTML =
+    '<div class="msg ' + (isErr ? 'msg-error' : 'msg-success') + '">' + esc(msg) + '</div>';
+  window.scrollTo(0, 0);
+}
+function esc(s) {
+  if (!s && s !== 0) return '';
+  var d = document.createElement('div');
+  d.appendChild(document.createTextNode(String(s)));
+  return d.innerHTML;
+}
+init();
+</script>
+</body>
+</html>

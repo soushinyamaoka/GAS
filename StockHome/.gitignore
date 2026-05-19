@@ -1,0 +1,42 @@
+# ============================================================
+# StockHome - .gitignore
+# ============================================================
+# GitHub 公開時に「個人情報」「個別環境設定」を漏らさないため。
+# フォークしたユーザーは下記のファイルを自前で用意する想定:
+#   - .clasp.json       (clasp login 後に手動作成、scriptId を記入)
+#   - deploy.bat        (deploy.bat.example をコピーして DEPLOY_ID を埋める想定)
+# ============================================================
+
+# --- clasp（GAS プロジェクト固有の scriptId を含む） ---
+.clasp.json
+
+# --- デプロイスクリプト（DEPLOY_ID を含む） ---
+deploy.bat
+
+# --- 個人データ・テストデータ ---
+# 実スプレッドシートID、家族の氏名、メールアドレス、注文情報、
+# 購入履歴、Gmail 本文サンプル等の個人情報を含むため commit 禁止。
+data/
+
+# --- 一般的な無視ファイル ---
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# エディタ・IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Node 系（万が一）
+node_modules/
+package-lock.json
+yarn.lock
+
+# ログ・一時ファイル
+*.log
+*.tmp
+*.bak

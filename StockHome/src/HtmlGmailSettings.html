@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<base href="<?= webAppUrl ?>" target="_top">
+<title>Gmail 設定 - StockHome</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  font-size:15px;color:#333;background:#f5f5f5;padding-bottom:70px}
+.container{max-width:480px;margin:0 auto;padding:12px}
+h1{font-size:18px;padding:14px 12px;background:#2c3e50;color:#fff;text-align:center}
+h2{font-size:16px;margin:16px 0 8px;color:#2c3e50}
+.card{background:#fff;border-radius:8px;padding:14px;margin-bottom:12px;
+  box-shadow:0 1px 3px rgba(0,0,0,.1)}
+label{display:block;font-size:14px;font-weight:bold;margin:10px 0 4px;color:#555}
+input[type=text],textarea{width:100%;padding:10px;border:1px solid #ccc;
+  border-radius:6px;font-size:14px;font-family:monospace}
+textarea{height:50px;resize:vertical}
+.info-row{display:flex;justify-content:space-between;padding:6px 0;
+  border-bottom:1px solid #f0f0f0;font-size:14px}
+.info-row .lbl{color:#888}.info-row .val{font-weight:bold}
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px;color:#fff}
+.badge-on{background:#27ae60}.badge-off{background:#e74c3c}
+.btn{display:inline-block;padding:12px 20px;border:none;border-radius:6px;
+  font-size:15px;font-weight:bold;cursor:pointer;width:100%;color:#fff;margin-top:8px}
+.btn-success{background:#27ae60}.btn-danger{background:#e74c3c}
+.btn-primary{background:#4a86c8}
+.btn-outline{background:#fff;color:#2c3e50;border:2px solid #2c3e50}
+.btn:disabled{opacity:.5}
+.msg{padding:10px;border-radius:6px;margin-bottom:10px;font-size:14px}
+.msg-success{background:#d4edda;color:#155724}
+.msg-error{background:#f8d7da;color:#721c24}
+.loading{text-align:center;padding:20px;color:#888}
+.section-title{font-size:14px;font-weight:bold;color:#555;margin:12px 0 6px}
+.nav{position:fixed;bottom:0;left:0;right:0;background:#fff;
+  border-top:1px solid #ddd;display:flex;z-index:100}
+.nav a{flex:1;text-align:center;padding:8px 2px 6px;font-size:11px;
+  color:#888;text-decoration:none;line-height:1.2}
+.nav a span{display:block;font-size:18px;margin-bottom:2px}
+/* ユーザー設定 */
+.user-form{margin-top:12px}
+.user-form input{margin-bottom:6px}
+</style>
+</head>
+<body>
+
+<h1>設定</h1>
+<div class="container">
+  <div id="msg"></div>
+
+  <!-- ユーザー設定 -->
+  <h2>ユーザー設定</h2>
+  <div class="card" id="userSection">
+    <div class="loading">読み込み中...</div>
+  </div>
+
+  <!-- Gmail 取込ステータス -->
+  <h2>Gmail 自動取込</h2>
+  <div class="card" id="statusSection">
+    <div class="loading">読み込み中...</div>
+  </div>
+
+  <!-- 検索クエリ -->
+  <h2>検索条件</h2>
+  <div class="card">
+    <label for="amazonQuery">Amazon 検索クエリ</label>
+    <textarea id="amazonQuery"></textarea>
+
+    <label for="matsukiyoQuery">マツキヨ検索クエリ</label>
+    <textarea id="matsukiyoQuery"></textarea>
+
+    <button class="btn btn-outline" onclick="saveQueries()">検索条件を保存</button>
+  </div>
+
+  <a href="?page=home" class="btn btn-outline" style="margin-top:12px;display:block;text-align:center">ホームに戻る</a>
+</div>
+
+<nav class="nav">
+  <a href="?page=home"><span>🏠</span>ホーム</a>
+  <a href="?page=items"><span>📦</span>消耗品</a>
+  <a href="?page=stocks"><span>📊</span>在庫</a>
+  <a href="?page=purchaseForm"><span>🛒</span>購入登録</a>
+  <a href="?page=notifications"><span>🔔</span>通知</a>
+</nav>
+
+<script>
+function init() {
+  // ユーザー情報
+  google.script.run.withSuccessHandler(function(res) {
+    if (!res.success) return;
+    renderUser(res.data);
+  }).getInitialData();
+
+  // Gmail 設定
+  google.script.run.withSuccessHandler(function(res) {
+    if (!res.success) { document.getElementById('statusSection').innerHTML = '<p>設定を読み込めません。</p>'; return; }
+    renderStatus(res.data);
+  }).getGmailSettings();
+}
+
+function renderUser(data) {
+  var html = '';
+  if (data.currentUser) {
+    html += '<div class="info-row"><span class="lbl">ユーザー名</span><span class="val">' +
+      esc(data.currentUser.user_name) + '</span></div>';
+    html += '<div class="info-row"><span class="lbl">メール</span><span class="val">' +
+      esc(data.currentUser.email) + '</span></div>';
+    html += '<div class="info-row"><span class="lbl">ロール</span><span class="val">' +
+      esc(data.currentUser.role) + '</span></div>';
+  } else {
+    html += '<p>ユーザーが未登録です。以下で登録してください。</p>';
+  }
+  html += '<div class="user-form">';
+  html += '<div class="section-title">ユーザー登録 / 更新</div>';
+  html += '<input type="text" id="userName" placeholder="ユーザー名">';
+  html += '<input type="text" id="botTargetId" placeholder="LINE Bot 送信先ID（任意）">';
+  html += '<button class="btn btn-primary" onclick="saveUserInfo()">ユーザーを保存</button>';
+  html += '</div>';
+  document.getElementById('userSection').innerHTML = html;
+
+  if (data.currentUser) {
+    document.getElementById('userName').value = data.currentUser.user_name || '';
+    document.getElementById('botTargetId').value = data.currentUser.existing_bot_target_id || '';
+  }
+}
+
+function renderStatus(status) {
+  var html = '';
+  html += '<div class="info-row"><span class="lbl">状態</span><span class="val">' +
+    (status.enabled ? '<span class="badge badge-on">有効</span>' : '<span class="badge badge-off">無効</span>') + '</span></div>';
+  html += '<div class="info-row"><span class="lbl">Trigger</span><span class="val">' +
+    (status.hasTrigger ? 'あり' : 'なし') + '</span></div>';
+  html += '<div class="info-row"><span class="lbl">最終取込</span><span class="val">' +
+    esc(status.lastRunAt) + '</span></div>';
+  html += '<div class="info-row"><span class="lbl">実行間隔</span><span class="val">' +
+    status.intervalHours + '時間ごと</span></div>';
+  html += '<div class="info-row"><span class="lbl">メール</span><span class="val">' +
+    esc(status.email) + '</span></div>';
+
+  if (!status.enabled) {
+    html += '<button class="btn btn-success" onclick="enableGmail()">Gmail 自動取込を有効化</button>';
+  } else {
+    html += '<button class="btn btn-danger" onclick="disableGmail()">Gmail 自動取込を無効化</button>';
+  }
+  html += '<button class="btn btn-outline" onclick="runNow()" style="margin-top:4px">今すぐ実行</button>';
+
+  document.getElementById('statusSection').innerHTML = html;
+  document.getElementById('amazonQuery').value = status.amazonQuery || '';
+  document.getElementById('matsukiyoQuery').value = status.matsukiyoQuery || '';
+}
+
+function saveUserInfo() {
+  var data = {
+    user_name: document.getElementById('userName').value,
+    existing_bot_target_id: document.getElementById('botTargetId').value
+  };
+  google.script.run
+    .withSuccessHandler(function(res) { showMsg(res.message, !res.success); })
+    .withFailureHandler(function(e) { showMsg(e.message, true); })
+    .saveUser(data);
+}
+
+function enableGmail() {
+  google.script.run
+    .withSuccessHandler(function(res) {
+      showMsg(res.message, !res.success);
+      if (res.success) init();
+    })
+    .withFailureHandler(function(e) { showMsg(e.message, true); })
+    .enableMyGmailImport();
+}
+
+function disableGmail() {
+  google.script.run
+    .withSuccessHandler(function(res) {
+      showMsg(res.message, !res.success);
+      if (res.success) init();
+    })
+    .withFailureHandler(function(e) { showMsg(e.message, true); })
+    .disableMyGmailImport();
+}
+
+function runNow() {
+  showMsg('取込実行中... しばらくお待ちください。', false);
+  google.script.run
+    .withSuccessHandler(function(res) { showMsg(res.message, !res.success); })
+    .withFailureHandler(function(e) { showMsg(e.message, true); })
+    .runGmailImportNow();
+}
+
+function saveQueries() {
+  var data = {
+    amazon_search_query: document.getElementById('amazonQuery').value,
+    matsukiyo_search_query: document.getElementById('matsukiyoQuery').value
+  };
+  google.script.run
+    .withSuccessHandler(function(res) { showMsg(res.message, !res.success); })
+    .withFailureHandler(function(e) { showMsg(e.message, true); })
+    .saveGmailSettings(data);
+}
+
+function showMsg(msg, isErr) {
+  document.getElementById('msg').innerHTML =
+    '<div class="msg ' + (isErr ? 'msg-error' : 'msg-success') + '">' + esc(msg) + '</div>';
+  window.scrollTo(0, 0);
+}
+function esc(s) {
+  if (!s && s !== 0) return '';
+  var d = document.createElement('div');
+  d.appendChild(document.createTextNode(String(s)));
+  return d.innerHTML;
+}
+init();
+</script>
+</body>
+</html>

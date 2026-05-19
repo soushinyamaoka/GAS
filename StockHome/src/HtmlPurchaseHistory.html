@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<base href="<?= webAppUrl ?>" target="_top">
+<title>購入履歴 - StockHome</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  font-size:15px;color:#333;background:#f5f5f5;padding-bottom:70px}
+.container{max-width:480px;margin:0 auto;padding:12px}
+h1{font-size:18px;padding:14px 12px;background:#4a86c8;color:#fff;text-align:center}
+.card{background:#fff;border-radius:8px;padding:12px;margin-bottom:10px;
+  box-shadow:0 1px 3px rgba(0,0,0,.1)}
+.item-name{font-weight:bold;font-size:16px;margin-bottom:8px}
+.stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px}
+.stat{background:#f8f9fa;padding:8px;border-radius:6px;text-align:center}
+.stat .lbl{font-size:11px;color:#888}
+.stat .val{font-size:15px;font-weight:bold;color:#4a86c8}
+.row{display:flex;justify-content:space-between;font-size:13px;padding:6px 0;
+  border-bottom:1px solid #f0f0f0}
+.row:last-child{border-bottom:none}
+.row .left{flex:1}
+.row .right{text-align:right;min-width:100px;color:#666}
+.badge{display:inline-block;padding:1px 6px;border-radius:8px;font-size:10px;color:#fff;margin-left:4px}
+.badge-gmail{background:#3498db}.badge-manual{background:#95a5a6}.badge-pending{background:#e67e22}
+.loading{text-align:center;padding:20px;color:#888}
+.msg{padding:10px;border-radius:6px;margin-bottom:10px;font-size:14px}
+.msg-error{background:#f8d7da;color:#721c24}
+.empty{text-align:center;color:#888;padding:16px}
+.nav{position:fixed;bottom:0;left:0;right:0;background:#fff;
+  border-top:1px solid #ddd;display:flex;z-index:100}
+.nav a{flex:1;text-align:center;padding:8px 2px 6px;font-size:11px;
+  color:#888;text-decoration:none;line-height:1.2}
+.nav a span{display:block;font-size:18px;margin-bottom:2px}
+.back-link{display:inline-block;margin-bottom:8px;font-size:13px;color:#4a86c8;text-decoration:none}
+.note{font-size:11px;color:#999;margin-top:6px}
+</style>
+</head>
+<body>
+
+<h1>購入履歴</h1>
+<div class="container">
+  <a href="?page=items" class="back-link">← 消耗品一覧へ戻る</a>
+  <div id="msg"></div>
+  <div id="content"><div class="loading">読み込み中...</div></div>
+</div>
+
+<nav class="nav">
+  <a href="?page=home"><span>🏠</span>ホーム</a>
+  <a href="?page=items"><span>📦</span>消耗品</a>
+  <a href="?page=stocks"><span>📊</span>在庫</a>
+  <a href="?page=purchaseForm"><span>🛒</span>購入登録</a>
+  <a href="?page=notifications"><span>🔔</span>通知</a>
+</nav>
+
+<script>
+var TARGET_ITEM_ID = '<?= itemId ?>';
+
+function load() {
+  if (!TARGET_ITEM_ID) {
+    showError('品目 ID が指定されていません。');
+    return;
+  }
+  google.script.run
+    .withSuccessHandler(function(res) {
+      if (!res || !res.success) {
+        showError((res && res.message) || '読み込みに失敗しました。');
+        return;
+      }
+      render(res.data);
+    })
+    .withFailureHandler(function(e) { showError(e.message); })
+    .getPurchaseHistoryForItem(TARGET_ITEM_ID);
+}
+
+function render(data) {
+  var item = data.item || {};
+  var stats = data.stats || {};
+  var logs = data.logs || [];
+
+  var html = '';
+
+  // 品目見出し
+  html += '<div class="card">';
+  html += '<div class="item-name">' + esc(item.item_name || '(品目不明)') + '</div>';
+
+  // 価格統計
+  if (stats.count > 0) {
+    html += '<div class="note">1箱（1セット）の単価ベース・直近 ' + stats.count + ' 件の価格</div>';
+    html += '<div class="stats-grid">';
+    html += statCell('最新', stats.latest);
+    html += statCell('平均', stats.avg);
+    html += statCell('最安', stats.min);
+    html += statCell('最高', stats.max);
+    html += '</div>';
+  } else {
+    html += '<div class="note">価格データなし</div>';
+  }
+  html += '</div>';
+
+  // 履歴リスト
+  html += '<div class="card">';
+  if (logs.length === 0) {
+    html += '<div class="empty">購入履歴がありません。</div>';
+  } else {
+    for (var i = 0; i < logs.length; i++) {
+      var log = logs[i];
+      var purchasedAt = formatDate(log.purchased_at);
+      var qtyStr = log.qty;
+      var priceStr = (log.price !== '' && log.price !== null && log.price !== undefined)
+        ? ('¥' + Number(log.price).toLocaleString())
+        : '-';
+
+      var sourceBadge = '';
+      if (log.source === 'gmail') {
+        var vendor = log.external_vendor || 'gmail';
+        sourceBadge = '<span class="badge badge-gmail">' + esc(vendor) + '</span>';
+      } else if (log.source === 'manual') {
+        sourceBadge = '<span class="badge badge-manual">手動</span>';
+      }
+
+      var pendingBadge = '';
+      if (log.counted_in_inventory !== true && log.counted_in_inventory !== 'true' && log.counted_in_inventory !== 'TRUE') {
+        pendingBadge = '<span class="badge badge-pending">未反映</span>';
+      }
+
+      html += '<div class="row">';
+      html += '<div class="left">' + esc(purchasedAt) +
+        ' / ' + qtyStr + (item.unit ? esc(item.unit) : '') +
+        sourceBadge + pendingBadge + '</div>';
+      html += '<div class="right">' + priceStr + '</div>';
+      html += '</div>';
+    }
+  }
+  html += '</div>';
+
+  document.getElementById('content').innerHTML = html;
+}
+
+function statCell(label, value) {
+  var display = (value !== null && value !== undefined && value !== '')
+    ? ('¥' + Number(value).toLocaleString())
+    : '-';
+  return '<div class="stat"><div class="lbl">' + esc(label) +
+    '</div><div class="val">' + display + '</div></div>';
+}
+
+function formatDate(s) {
+  if (!s) return '';
+  // yyyy/MM/dd 形式に統一
+  var str = String(s);
+  if (/^\d{4}-\d{2}-\d{2}/.test(str)) {
+    return str.substring(0, 10).replace(/-/g, '/');
+  }
+  // Date toString 形式（"Wed Apr 15 2026 ..."）の場合は new Date で解釈
+  var d = new Date(str);
+  if (!isNaN(d.getTime())) {
+    var yyyy = d.getFullYear();
+    var mm = ('0' + (d.getMonth() + 1)).slice(-2);
+    var dd = ('0' + d.getDate()).slice(-2);
+    return yyyy + '/' + mm + '/' + dd;
+  }
+  return str;
+}
+
+function showError(msg) {
+  document.getElementById('msg').innerHTML =
+    '<div class="msg msg-error">' + esc(msg) + '</div>';
+  document.getElementById('content').innerHTML = '';
+}
+
+function esc(s) {
+  if (!s && s !== 0) return '';
+  var d = document.createElement('div');
+  d.appendChild(document.createTextNode(String(s)));
+  return d.innerHTML;
+}
+
+load();
+</script>
+</body>
+</html>

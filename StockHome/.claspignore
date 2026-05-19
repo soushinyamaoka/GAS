@@ -1,0 +1,6 @@
+# clasp は rootDir (src/) 配下のみ対象にする
+# rootDir 外は自動的に無視されるため .claspignore は最小限で OK
+
+.git/**
+node_modules/**
+*.md
