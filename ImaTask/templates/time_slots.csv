@@ -1,0 +1,5 @@
+time_slot_id,name,start_time,end_time,active
+morning,朝,05:00,10:00,TRUE
+noon_holiday,昼・休日,10:00,16:00,TRUE
+night_before_sleep,夜・寝かしつけ前,16:00,20:30,TRUE
+night_after_sleep,夜・寝かしつけ後,20:30,24:00,TRUE

@@ -1,0 +1,6 @@
+key,value
+app_title,日常タスクボード
+refresh_seconds,30
+warning_default_minutes,10
+show_done_tasks,TRUE
+tablet_mode,TRUE

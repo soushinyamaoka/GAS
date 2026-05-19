@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <base target="_top">
+  <!-- スタイルとスクリプトを別ファイルに分離してインクルード -->
+  <?!= include('Style'); ?>
+</head>
+<body>
+
+  <!-- ===== ヘッダー (時刻・時間帯・残タスク数) ===== -->
+  <header id="appHeader" class="app-header">
+    <div class="header-left">
+      <!-- 現在時刻 (大きく表示) -->
+      <div id="clock" class="clock">--:--</div>
+      <!-- 今日の日付 -->
+      <div id="dateLabel" class="date-label">----/--/--</div>
+    </div>
+
+    <div class="header-center">
+      <!-- 現在の時間帯名 -->
+      <div id="slotName" class="slot-name">読み込み中...</div>
+      <!-- 時間帯の終了時刻と残り時間 -->
+      <div id="slotRemain" class="slot-remain"></div>
+    </div>
+
+    <div class="header-right">
+      <!-- 残タスク数 (一目で分かるよう大きく表示) -->
+      <div class="remain-label">残タスク</div>
+      <div id="remainCount" class="remain-count">--</div>
+    </div>
+  </header>
+
+  <!-- ===== 警告メッセージ領域 ===== -->
+  <!-- 終了間近・時間超過などの全体メッセージ -->
+  <div id="globalAlert" class="global-alert hidden"></div>
+
+  <!-- ===== 前時間帯の未完了タスク警告 ===== -->
+  <!-- 当日の前時間帯に未完了タスクが残っている場合に表示 -->
+  <section id="overdueSection" class="overdue-section hidden">
+    <div class="overdue-title">⚠ 前の時間帯の未完了があります</div>
+    <div id="overdueBody" class="overdue-body"></div>
+  </section>
+
+  <!-- ===== 担当者ごとのタスク一覧 ===== -->
+  <main id="boardMain" class="board-main">
+    <!-- 担当者カラムは JS で動的に生成する -->
+  </main>
+
+  <!-- ===== フッター (接続状態) ===== -->
+  <footer class="app-footer">
+    <span id="connectionStatus" class="conn-ok">接続OK</span>
+    <span id="lastUpdated" class="last-updated"></span>
+  </footer>
+
+  <!-- クライアント側 JavaScript -->
+  <?!= include('Script'); ?>
+</body>
+</html>

@@ -1,0 +1,854 @@
+<script>
+/* =====================================================================
+   日常タスク常時表示アプリ - クライアント側スクリプト
+   役割:
+     - GAS から取得した時間帯定義・タスク定義・完了状態を画面に描画
+     - 現在時刻に応じて表示する時間帯を切り替え
+     - 完了チェック操作を即時反映し、サーバーに保存
+     - 一定間隔で自動更新
+   ===================================================================== */
+
+(function () {
+  'use strict';
+
+  // ----- アプリ状態 (画面更新で参照する) -----
+  var state = {
+    settings:     {},   // 設定 (key-value)
+    timeSlots:    [],   // 時間帯定義
+    tasks:        [],   // タスク定義
+    statusMap:    {},   // task_id -> {status, completed_at, ...}
+    today:        '',   // 今日の日付 (yyyy-MM-dd)
+    serverOffset: 0,    // サーバー時刻とクライアント時刻の差 (ms)
+    refreshSec:   30,   // 自動更新間隔 (秒)
+    warningDefault: 10, // 警告までのデフォルト分数
+    showDoneTasks: true // 完了タスクを表示するか
+  };
+
+  // ----- 内部用: 自動更新タイマー -----
+  var refreshTimer = null;
+  var clockTimer   = null;
+
+  // 直近で render() した時の「分」と「時間帯ID」
+  // これらが変わった時だけ DOM を作り直すことで、
+  // CSS アニメーションが毎秒リセットされる問題を防ぐ
+  var lastRenderedMinute = -1;
+  var lastRenderedSlotId = '__none__';
+
+  // =================================================================
+  // 起動処理
+  // =================================================================
+  document.addEventListener('DOMContentLoaded', function () {
+    // 1秒ごとに時計とタスク状態を再評価する
+    clockTimer = setInterval(tick, 1000);
+    // 初回データ取得
+    fetchAppData();
+  });
+
+  // =================================================================
+  // データ取得
+  // =================================================================
+
+  /**
+   * GAS から最新データを取得して画面を再描画する
+   */
+  function fetchAppData() {
+    google.script.run
+      .withSuccessHandler(onAppDataLoaded)
+      .withFailureHandler(onLoadError)
+      .getAppData();
+  }
+
+  /**
+   * データ取得成功時のハンドラ
+   */
+  function onAppDataLoaded(data) {
+    setConnection(true);
+    state.settings   = data.settings || {};
+    state.timeSlots  = (data.timeSlots || []).filter(function (s) { return s.active; });
+    state.tasks      = (data.tasks     || []).filter(function (t) { return t.active; });
+    state.today      = data.today;
+
+    // 完了状態を task_id をキーにしたマップに展開
+    state.statusMap = {};
+    (data.taskStatus || []).forEach(function (s) {
+      state.statusMap[s.task_id] = s;
+    });
+
+    // 設定の反映
+    if (state.settings.refresh_seconds) {
+      var sec = Number(state.settings.refresh_seconds);
+      if (sec >= 5) state.refreshSec = sec;
+    }
+    if (state.settings.warning_default_minutes) {
+      state.warningDefault = Number(state.settings.warning_default_minutes) || 10;
+    }
+    if (state.settings.show_done_tasks !== undefined) {
+      state.showDoneTasks = toBool(state.settings.show_done_tasks);
+    }
+
+    // サーバー時刻からクライアント時刻のズレを計算
+    if (data.serverTime) {
+      var serverMs = new Date(data.serverTime).getTime();
+      state.serverOffset = serverMs - Date.now();
+    }
+
+    // 自動更新タイマーを再セット
+    setupRefreshTimer();
+
+    // 初回描画
+    render();
+  }
+
+  /**
+   * データ取得失敗時のハンドラ
+   */
+  function onLoadError(err) {
+    setConnection(false, err && err.message ? err.message : '通信エラー');
+  }
+
+  // =================================================================
+  // 自動更新タイマー
+  // =================================================================
+  function setupRefreshTimer() {
+    if (refreshTimer) clearInterval(refreshTimer);
+    refreshTimer = setInterval(fetchAppData, state.refreshSec * 1000);
+  }
+
+  // =================================================================
+  // 1 秒ごとの処理 (時計表示と時間帯判定)
+  // =================================================================
+  /**
+   * 毎秒呼ばれる軽量な処理:
+   *   - 時計表示の更新 (1 秒単位)
+   *   - ヘッダの残り時間ラベル更新 (1 分単位の表示なので、分が変わった時だけ)
+   * フルの再描画は分が変わった時 / 時間帯が切り替わった時のみ実行する
+   * これにより CSS アニメーションが維持され、ボタン操作も安定する
+   */
+  function tick() {
+    updateClock();
+    if (state.timeSlots.length === 0) return;
+
+    var now = nowOnServer();
+
+    // 日付が変わったら (前日 → 当日) 当日分の status を取り直すため即時 fetch
+    // state.today は前回 fetch 時点の日付なので、これと比較する
+    var todayStr = formatDateString(now);
+    if (state.today && state.today !== todayStr) {
+      fetchAppData();
+    }
+
+    var slot = findCurrentSlot(now);
+    var slotId = slot ? slot.time_slot_id : '__none__';
+    var minute = now.getHours() * 60 + now.getMinutes();
+
+    // ヘッダの残り時間表示は分単位なので、分が変わったタイミングで更新
+    if (minute !== lastRenderedMinute) {
+      updateSlotRemainLabel(slot, now);
+    }
+
+    // 時間帯切り替わり、または分の変化があれば再描画
+    // (警告境界 = warning_minutes_before_end は分単位の判定なので、これで十分)
+    if (slotId !== lastRenderedSlotId || minute !== lastRenderedMinute) {
+      lastRenderedSlotId = slotId;
+      lastRenderedMinute = minute;
+      render();
+    }
+  }
+
+  /**
+   * ヘッダの「残り N 分」表示だけを更新する
+   * tick() から軽量に呼べるよう、render() 全体を呼ばずに済ませる
+   */
+  function updateSlotRemainLabel(slot, now) {
+    var slotRemainEl = document.getElementById('slotRemain');
+    if (!slot) {
+      slotRemainEl.textContent = '';
+      return;
+    }
+    var endMin    = parseTimeToMinutes(slot.end_time);
+    var nowMin    = nowToMinutes(now);
+    var remainMin = endMin - nowMin;
+    if (remainMin < 0) remainMin = 0;
+    slotRemainEl.textContent =
+      slot.start_time + ' - ' + slot.end_time +
+      '   (残り ' + formatRemainMinutes(remainMin) + ')';
+  }
+
+  // =================================================================
+  // 描画
+  // =================================================================
+
+  /**
+   * 画面全体を再描画する
+   */
+  function render() {
+    var now = nowOnServer();
+
+    // 現在の時間帯を判定
+    var currentSlot = findCurrentSlot(now);
+
+    // ヘッダー描画
+    renderHeader(now, currentSlot);
+
+    // 前時間帯の未完了 (時間超過タスク)
+    var overdueGroups = collectOverdueTasks(currentSlot);
+    renderOverdue(overdueGroups);
+
+    // 現在時間帯のタスクを担当者別に描画
+    var visibleTasks = currentSlot ? filterTasksForSlot(currentSlot) : [];
+    renderBoard(visibleTasks, currentSlot, now);
+
+    // 残タスク数の更新
+    var remain = countPendingTasks(visibleTasks);
+    renderRemain(remain, currentSlot, now);
+
+    // 最終更新時刻
+    setLastUpdated(now);
+  }
+
+  /**
+   * ヘッダー (時計・日付・時間帯名・残時間) を更新
+   * 残り時間ラベルは tick() からも更新するため、共通の updateSlotRemainLabel に集約
+   */
+  function renderHeader(now, slot) {
+    document.getElementById('dateLabel').textContent = formatDateLabel(now);
+
+    var slotNameEl = document.getElementById('slotName');
+    if (slot) {
+      slotNameEl.textContent = slot.name;
+    } else {
+      slotNameEl.textContent = '対象時間帯なし';
+    }
+    updateSlotRemainLabel(slot, now);
+  }
+
+  /**
+   * 残タスク数表示と、現在時間帯のグローバル警告を更新
+   * 警告中(黄色)・時間超過(赤)のタスクが存在すれば、一括完了ボタン付きで表示する
+   */
+  function renderRemain(count, slot, now) {
+    var el = document.getElementById('remainCount');
+    el.textContent = count;
+    el.classList.toggle('is-zero', count === 0);
+
+    var alertEl = document.getElementById('globalAlert');
+    alertEl.classList.add('hidden');
+    alertEl.classList.remove('is-danger');
+    alertEl.innerHTML = '';
+
+    if (!slot || count === 0) return;
+
+    // 現在時間帯のうち、警告中/時間超過の未完了タスクを集める
+    var alerted = collectAlertedInCurrentSlot(slot, now);
+    if (alerted.length === 0) return;
+
+    // 危険度の高い方 (overdue) があれば赤系のスタイル
+    var hasOverdue = alerted.some(function (a) { return a.level === 'overdue'; });
+    if (hasOverdue) alertEl.classList.add('is-danger');
+
+    // メッセージ部分
+    var msg = document.createElement('span');
+    msg.className = 'global-alert-msg';
+    msg.textContent = hasOverdue
+      ? '時間超過の未完了が ' + alerted.length + '件 あります'
+      : slot.end_time + 'までに完了したいタスクが ' + alerted.length + '件 あります';
+    alertEl.appendChild(msg);
+
+    // 一括完了ボタン
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'bulk-complete-btn';
+    btn.textContent = '⚡ 警告中の' + alerted.length + '件を全て完了';
+    btn.addEventListener('click', function () {
+      bulkComplete(alerted.map(function (a) { return a.task; }), '警告中タスク');
+    });
+    alertEl.appendChild(btn);
+
+    alertEl.classList.remove('hidden');
+  }
+
+  /**
+   * 現在時間帯のうち、警告中(warning)・時間超過(overdue) の未完了タスクを集める
+   * @return {Array<{task, level}>}
+   */
+  function collectAlertedInCurrentSlot(slot, now) {
+    var dayKey = getDayKey(now);
+    var result = [];
+    state.tasks.forEach(function (t) {
+      if (t.time_slot_id !== slot.time_slot_id) return;
+      if (!matchDays(t.days, dayKey)) return;
+      if (isDone(t)) return;
+      var level = computeTaskWarningLevel(t, slot, now);
+      if (level === 'warning' || level === 'overdue') {
+        result.push({ task: t, level: level });
+      }
+    });
+    return result;
+  }
+
+  /**
+   * 前時間帯の未完了タスクを描画する
+   * 各タスクはチェックボックス付きで描画し、ここからも完了操作できるようにする
+   * @param {Object} groups { slotId: { slot, tasks: [] } }
+   */
+  function renderOverdue(groups) {
+    var section = document.getElementById('overdueSection');
+    var body    = document.getElementById('overdueBody');
+    body.innerHTML = '';
+
+    var slotIds = Object.keys(groups);
+    if (slotIds.length === 0) {
+      section.classList.add('hidden');
+      return;
+    }
+
+    section.classList.remove('hidden');
+
+    slotIds.forEach(function (slotId) {
+      var g = groups[slotId];
+
+      // 時間帯ごとのブロック
+      var slotDiv = document.createElement('div');
+      slotDiv.className = 'overdue-slot';
+
+      // ヘッダー部 (時間帯名 + 一括完了ボタン)
+      var head = document.createElement('div');
+      head.className = 'overdue-slot-head';
+
+      var nameSpan = document.createElement('div');
+      nameSpan.className = 'overdue-slot-name';
+      nameSpan.textContent = g.slot.name + '：' + g.tasks.length + '件 残';
+      head.appendChild(nameSpan);
+
+      var bulkBtn = document.createElement('button');
+      bulkBtn.type = 'button';
+      bulkBtn.className = 'bulk-complete-btn bulk-complete-btn--overdue';
+      bulkBtn.textContent = '⚡ ' + g.tasks.length + '件を全て完了';
+      bulkBtn.addEventListener('click', (function (tasks, label) {
+        return function () { bulkComplete(tasks, label); };
+      })(g.tasks.slice(), g.slot.name + ' の未完了'));
+      head.appendChild(bulkBtn);
+
+      slotDiv.appendChild(head);
+
+      // タスク一覧 (チェックボックス付き)
+      var ul = document.createElement('ul');
+      ul.className = 'overdue-task-list';
+      g.tasks.forEach(function (t) {
+        ul.appendChild(buildOverdueTaskItem(t));
+      });
+      slotDiv.appendChild(ul);
+
+      body.appendChild(slotDiv);
+    });
+  }
+
+  /**
+   * 前時間帯セクション内の個別タスク行を作成 (チェックボックス付き)
+   * 通常のタスク行と挙動を揃え、ここからも完了/未完了を切り替えられるようにする
+   */
+  function buildOverdueTaskItem(task) {
+    var li = document.createElement('li');
+    li.className = 'overdue-task-item';
+    li.dataset.taskId = task.task_id;
+
+    var checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.className = 'task-checkbox';
+    checkbox.checked = isDone(task);
+    checkbox.addEventListener('change', function (ev) {
+      onCheckboxChange(task, ev.target.checked, null);
+    });
+
+    li.addEventListener('click', function (ev) {
+      if (ev.target !== checkbox) {
+        checkbox.checked = !checkbox.checked;
+        onCheckboxChange(task, checkbox.checked, null);
+      }
+    });
+
+    var label = document.createElement('span');
+    label.className = 'overdue-task-label';
+    label.textContent = '[' + task.assignee + '] ' + task.task_name;
+
+    li.appendChild(checkbox);
+    li.appendChild(label);
+    return li;
+  }
+
+  /**
+   * 担当者カラム形式でタスクを描画する
+   */
+  function renderBoard(tasks, currentSlot, now) {
+    var board = document.getElementById('boardMain');
+    board.innerHTML = '';
+
+    if (!currentSlot) {
+      var empty = document.createElement('div');
+      empty.className = 'task-empty';
+      empty.textContent = '現在表示する時間帯がありません';
+      board.appendChild(empty);
+      return;
+    }
+
+    // 該当時間帯にタスクが 1 件もない場合の空表示
+    if (!tasks || tasks.length === 0) {
+      var emptySlot = document.createElement('div');
+      emptySlot.className = 'task-empty';
+      emptySlot.textContent = 'この時間帯のタスクはありません';
+      board.appendChild(emptySlot);
+      return;
+    }
+
+    // 担当者ごとにグループ化 (出現順を維持)
+    var groups = {};
+    var assigneeOrder = [];
+    tasks.forEach(function (t) {
+      if (!groups[t.assignee]) {
+        groups[t.assignee] = [];
+        assigneeOrder.push(t.assignee);
+      }
+      groups[t.assignee].push(t);
+    });
+
+    // sort_order でソート
+    assigneeOrder.forEach(function (name) {
+      groups[name].sort(function (a, b) {
+        return (a.sort_order || 0) - (b.sort_order || 0);
+      });
+    });
+
+    // 各担当者カードを生成
+    assigneeOrder.forEach(function (name) {
+      var card = buildAssigneeCard(name, groups[name], currentSlot, now);
+      board.appendChild(card);
+    });
+  }
+
+  /**
+   * 担当者ごとのカード DOM を作成
+   */
+  function buildAssigneeCard(name, taskList, currentSlot, now) {
+    var card = document.createElement('div');
+    card.className = 'assignee-card';
+
+    var header = document.createElement('div');
+    header.className = 'assignee-header';
+
+    var nameEl = document.createElement('div');
+    nameEl.className = 'assignee-name';
+    nameEl.textContent = '【' + name + '】';
+    header.appendChild(nameEl);
+
+    var pending = taskList.filter(function (t) { return !isDone(t); }).length;
+    var countEl = document.createElement('div');
+    countEl.className = 'assignee-count';
+    countEl.textContent = '残 ' + pending + ' / ' + taskList.length;
+    header.appendChild(countEl);
+
+    card.appendChild(header);
+
+    var ul = document.createElement('ul');
+    ul.className = 'task-list';
+
+    var visibleList = state.showDoneTasks
+      ? taskList
+      : taskList.filter(function (t) { return !isDone(t); });
+
+    if (visibleList.length === 0) {
+      var li = document.createElement('li');
+      li.className = 'task-empty';
+      li.textContent = state.showDoneTasks ? 'タスクなし' : '全て完了しました';
+      ul.appendChild(li);
+    } else {
+      // 未完了を上、完了を下に並べる
+      visibleList.sort(function (a, b) {
+        var ad = isDone(a) ? 1 : 0;
+        var bd = isDone(b) ? 1 : 0;
+        if (ad !== bd) return ad - bd;
+        return (a.sort_order || 0) - (b.sort_order || 0);
+      });
+
+      visibleList.forEach(function (task) {
+        ul.appendChild(buildTaskItem(task, currentSlot, now));
+      });
+    }
+
+    card.appendChild(ul);
+    return card;
+  }
+
+  /**
+   * 個別タスク行の DOM を作成
+   */
+  function buildTaskItem(task, slot, now) {
+    var li = document.createElement('li');
+    li.className = 'task-item';
+    li.dataset.taskId = task.task_id;
+
+    var done = isDone(task);
+    if (done) {
+      li.classList.add('is-done');
+    } else {
+      li.classList.add('is-pending');
+      // 重要フラグ
+      if (task.important) li.classList.add('is-important');
+      // 警告レベルを判定
+      var level = computeTaskWarningLevel(task, slot, now);
+      if (level === 'warning') li.classList.add('is-warning');
+      if (level === 'overdue') li.classList.add('is-overdue');
+    }
+
+    var checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.className = 'task-checkbox';
+    checkbox.checked = done;
+    checkbox.addEventListener('change', function (ev) {
+      onCheckboxChange(task, ev.target.checked, li);
+    });
+    // クリック親のクリックイベントとの競合を防ぐ (label として動作)
+    li.addEventListener('click', function (ev) {
+      if (ev.target !== checkbox) {
+        checkbox.checked = !checkbox.checked;
+        onCheckboxChange(task, checkbox.checked, li);
+      }
+    });
+
+    var nameEl = document.createElement('div');
+    nameEl.className = 'task-name';
+    nameEl.textContent = task.task_name;
+
+    li.appendChild(checkbox);
+    li.appendChild(nameEl);
+    return li;
+  }
+
+  /**
+   * チェックボックス変更時の処理
+   * 画面上は即時反映し、その後 GAS にも保存する
+   */
+  function onCheckboxChange(task, checked, liEl) {
+    var newStatus = checked ? 'done' : 'pending';
+    var prev = state.statusMap[task.task_id];
+
+    // 即時反映: state を更新
+    state.statusMap[task.task_id] = {
+      task_id: task.task_id,
+      status: newStatus,
+      completed_at: checked ? formatDateTime(nowOnServer()) : '',
+      completed_by: ''
+    };
+
+    // 即時に行のクラスを更新 (再描画を待たずに反映する)
+    if (liEl) {
+      liEl.classList.toggle('is-done', checked);
+      liEl.classList.toggle('is-pending', !checked);
+      if (checked) {
+        liEl.classList.remove('is-warning', 'is-overdue', 'is-important');
+      } else {
+        if (task.important) liEl.classList.add('is-important');
+      }
+    }
+
+    // 残タスク数等の即時更新のためフル再描画
+    render();
+
+    // サーバーへ保存 (失敗時はロールバック)
+    google.script.run
+      .withSuccessHandler(function () {
+        setConnection(true);
+      })
+      .withFailureHandler(function (err) {
+        // 失敗時は元の状態に戻す
+        if (prev) {
+          state.statusMap[task.task_id] = prev;
+        } else {
+          delete state.statusMap[task.task_id];
+        }
+        setConnection(false, '保存に失敗しました');
+        render();
+      })
+      .updateTaskStatus(task.task_id, newStatus, task.assignee || '');
+  }
+
+  /**
+   * 複数タスクを一括で完了にする
+   * 確認ダイアログで誤タップ防止 → 画面に即時反映 → サーバーに 1 回でまとめて保存
+   * @param {Array}  tasks 対象タスクの配列
+   * @param {string} label 確認ダイアログ用の対象名 (例: "警告中タスク")
+   */
+  function bulkComplete(tasks, label) {
+    // 既に完了しているものは除外
+    var targets = (tasks || []).filter(function (t) { return !isDone(t); });
+    if (targets.length === 0) return;
+
+    // タブレットでの誤タップを避けるための確認
+    var ok = window.confirm(
+      label + ' の ' + targets.length + ' 件を全て完了にしますか？\n' +
+      '\n' +
+      targets.map(function (t) {
+        return '・[' + t.assignee + '] ' + t.task_name;
+      }).join('\n')
+    );
+    if (!ok) return;
+
+    // ロールバック用に元の状態を退避
+    var prevMap = {};
+    var nowStr = formatDateTime(nowOnServer());
+    targets.forEach(function (t) {
+      prevMap[t.task_id] = state.statusMap[t.task_id];
+      state.statusMap[t.task_id] = {
+        task_id: t.task_id,
+        status: 'done',
+        completed_at: nowStr,
+        completed_by: t.assignee || ''
+      };
+    });
+
+    // 画面を即時更新
+    render();
+
+    // サーバーへ一括保存
+    var taskIds = targets.map(function (t) { return t.task_id; });
+    google.script.run
+      .withSuccessHandler(function () {
+        setConnection(true);
+      })
+      .withFailureHandler(function () {
+        // 失敗時は全件ロールバック
+        targets.forEach(function (t) {
+          if (prevMap[t.task_id]) {
+            state.statusMap[t.task_id] = prevMap[t.task_id];
+          } else {
+            delete state.statusMap[t.task_id];
+          }
+        });
+        setConnection(false, '一括保存に失敗しました');
+        render();
+      })
+      .updateTasksStatusBulk(taskIds, 'done', '');
+  }
+
+  // =================================================================
+  // 時計・接続状態
+  // =================================================================
+
+  function updateClock() {
+    var now = nowOnServer();
+    // ヘッダ時計は仕様書の表示例に合わせて秒なし (HH:mm)
+    document.getElementById('clock').textContent =
+      pad2(now.getHours()) + ':' + pad2(now.getMinutes());
+  }
+
+  function setLastUpdated(now) {
+    document.getElementById('lastUpdated').textContent =
+      '更新: ' + formatTime(now);
+  }
+
+  function setConnection(ok, msg) {
+    var el = document.getElementById('connectionStatus');
+    if (ok) {
+      el.textContent = '接続OK';
+      el.className = 'conn-ok';
+    } else {
+      el.textContent = '⚠ ' + (msg || '接続エラー');
+      el.className = 'conn-error';
+    }
+  }
+
+  // =================================================================
+  // 時間帯・タスクの判定ロジック
+  // =================================================================
+
+  /**
+   * 現在時刻に該当する時間帯を返す (見つからなければ null)
+   */
+  function findCurrentSlot(now) {
+    var nowMin = nowToMinutes(now);
+    for (var i = 0; i < state.timeSlots.length; i++) {
+      var slot = state.timeSlots[i];
+      var s = parseTimeToMinutes(slot.start_time);
+      var e = parseTimeToMinutes(slot.end_time);
+      // start <= now < end の範囲なら該当
+      if (nowMin >= s && nowMin < e) return slot;
+    }
+    return null;
+  }
+
+  /**
+   * 指定時間帯に表示すべきタスクの配列を返す
+   */
+  function filterTasksForSlot(slot) {
+    var dayKey = getDayKey(nowOnServer()); // mon, tue, ...
+    return state.tasks.filter(function (t) {
+      if (t.time_slot_id !== slot.time_slot_id) return false;
+      if (!matchDays(t.days, dayKey)) return false;
+      return true;
+    });
+  }
+
+  /**
+   * 日次の曜日条件にマッチするか
+   * days は "all" または "mon,tue,..." のような文字列
+   */
+  function matchDays(days, todayKey) {
+    if (days == null) return true;
+    var s = String(days).trim().toLowerCase();
+    if (s === '' || s === 'all') return true;
+    var arr = s.split(',').map(function (x) { return x.trim(); });
+    return arr.indexOf(todayKey) !== -1;
+  }
+
+  /**
+   * 当日中の前時間帯 (= 現在時刻より前に終了している有効時間帯) で、
+   * 未完了のタスクをグループ化して返す
+   */
+  function collectOverdueTasks(currentSlot) {
+    var groups = {};
+    var nowMin = nowToMinutes(nowOnServer());
+    var dayKey = getDayKey(nowOnServer());
+
+    state.timeSlots.forEach(function (slot) {
+      // 現在の時間帯はスキップ
+      if (currentSlot && slot.time_slot_id === currentSlot.time_slot_id) return;
+      var endMin = parseTimeToMinutes(slot.end_time);
+      // 既に終了した時間帯のみ対象
+      if (endMin > nowMin) return;
+
+      // この時間帯の未完了タスクを収集
+      var pending = state.tasks.filter(function (t) {
+        if (t.time_slot_id !== slot.time_slot_id) return false;
+        if (!matchDays(t.days, dayKey)) return false;
+        return !isDone(t);
+      });
+      if (pending.length === 0) return;
+
+      groups[slot.time_slot_id] = { slot: slot, tasks: pending };
+    });
+
+    return groups;
+  }
+
+  /**
+   * タスクの警告レベルを返す: 'normal' | 'warning' | 'overdue'
+   */
+  function computeTaskWarningLevel(task, slot, now) {
+    if (!slot) return 'normal';
+    var endMin = parseTimeToMinutes(slot.end_time);
+    var nowMin = nowToMinutes(now);
+    var remain = endMin - nowMin; // 分
+
+    if (remain < 0) return 'overdue';
+
+    var threshold = Number(task.warning_minutes_before_end) || state.warningDefault;
+    if (threshold > 0 && remain <= threshold) return 'warning';
+    return 'normal';
+  }
+
+  /**
+   * task が完了済みかを返す
+   */
+  function isDone(task) {
+    var s = state.statusMap[task.task_id];
+    return !!(s && s.status === 'done');
+  }
+
+  /**
+   * 未完了タスク数を数える
+   */
+  function countPendingTasks(tasks) {
+    var n = 0;
+    for (var i = 0; i < tasks.length; i++) {
+      if (!isDone(tasks[i])) n++;
+    }
+    return n;
+  }
+
+  // =================================================================
+  // 時刻関連ユーティリティ
+  // =================================================================
+
+  /**
+   * サーバー時刻オフセットを反映した「現在時刻」を返す
+   */
+  function nowOnServer() {
+    return new Date(Date.now() + state.serverOffset);
+  }
+
+  /**
+   * "HH:mm" を 0:00 からの分に変換する
+   */
+  function parseTimeToMinutes(str) {
+    if (!str) return 0;
+    var m = String(str).match(/^(\d{1,2}):(\d{1,2})/);
+    if (!m) return 0;
+    return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+  }
+
+  /**
+   * Date を 0:00 からの分に変換する
+   */
+  function nowToMinutes(d) {
+    return d.getHours() * 60 + d.getMinutes();
+  }
+
+  /**
+   * Date を "HH:mm:ss" にフォーマット
+   */
+  function formatTime(d) {
+    return pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+  }
+
+  /**
+   * Date を "yyyy-MM-dd HH:mm:ss" にフォーマット
+   */
+  function formatDateTime(d) {
+    return d.getFullYear() + '-' +
+      pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + ' ' +
+      formatTime(d);
+  }
+
+  /**
+   * Date を "yyyy-MM-dd" にフォーマット (state.today との比較用)
+   */
+  function formatDateString(d) {
+    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+  }
+
+  /**
+   * 日付ラベル ("yyyy/MM/dd (曜)") を返す
+   */
+  function formatDateLabel(d) {
+    var w = ['日','月','火','水','木','金','土'][d.getDay()];
+    return d.getFullYear() + '/' + pad2(d.getMonth() + 1) + '/' + pad2(d.getDate()) +
+      ' (' + w + ')';
+  }
+
+  /**
+   * 残り分数を「2時間15分」「45分」のように整形
+   */
+  function formatRemainMinutes(min) {
+    if (min < 60) return min + '分';
+    var h = Math.floor(min / 60);
+    var m = min % 60;
+    return m > 0 ? (h + '時間' + m + '分') : (h + '時間');
+  }
+
+  /**
+   * Date から曜日キー (mon/tue/...) を返す
+   */
+  function getDayKey(d) {
+    return ['sun','mon','tue','wed','thu','fri','sat'][d.getDay()];
+  }
+
+  function pad2(n) { return ('0' + n).slice(-2); }
+
+  function toBool(v) {
+    if (typeof v === 'boolean') return v;
+    if (typeof v === 'number')  return v !== 0;
+    var s = String(v || '').trim().toLowerCase();
+    return s === 'true' || s === '1' || s === 'yes';
+  }
+
+})();
+</script>
